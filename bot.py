@@ -17,7 +17,6 @@ CHANNEL_LINK = "https://t.me/techtricks360"
 bot = telebot.TeleBot(BOT_TOKEN)
 user_downloads = {}
 
-# ২৪ ঘণ্টা অনলাইনে রাখার ওয়েব সার্ভার
 app = Flask(__name__)
 
 @app.route('/')
@@ -38,7 +37,6 @@ def get_channel_button():
     markup.add(InlineKeyboardButton("📢 আমাদের চ্যানেলে জয়েন করুন", url=CHANNEL_LINK))
     return markup
 
-# শর্ট বা শেয়ার লিংককে আসল লিংকে রূপান্তর করা
 def resolve_url(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
@@ -47,10 +45,8 @@ def resolve_url(url):
     except Exception:
         return url
 
-# ভিডিও ডাউনলোড ফাংশন (Render সার্ভারের জন্য বিশেষভাবে তৈরি)
-def download_video(url, filename):
-    real_url = resolve_url(url)
-    
+# ইঞ্জিন ১: প্রাইমারি ডাউনলোডার (TikTok ও সাধারণ সাইটের জন্য সেরা)
+def download_with_ytdlp(url, filename):
     ydl_opts = {
         'format': 'best[ext=mp4][filesize<48M]/best[ext=mp4]/best',
         'outtmpl': filename,
@@ -58,19 +54,69 @@ def download_video(url, filename):
         'no_warnings': True,
         'geo_bypass': True,
         'nocheckcertificate': True,
+        # বট চেক এড়াতে বিশেষ ক্লায়েন্ট ব্যবহৃত হয়েছে
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'mweb']
+                'player_client': ['tv_embedded', 'android_vr', 'web_creator']
             }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
         }
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([real_url])
+        ydl.download([url])
 
-# /start কমান্ড দিলে যা দেখাবে
+# ইঞ্জিন ২: ব্যাকআপ এপিআই (যদি ইউটিউব/ফেসবুক সার্ভার ব্লক করে দেয়)
+def download_with_fallback_api(url, filename):
+    # একাধিক পাবলিক ডাউনলোডার সার্ভারের তালিকা
+    api_endpoints = [
+        "https://cobalt-api.kwiatekmiki.com",
+        "https://cobalt.api.timelessnesses.me",
+        "https://api.cobalt.tools"
+    ]
+    
+    for api in api_endpoints:
+        try:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+            payload = {"url": url, "vQuality": "720"}
+            res = requests.post(api, json=payload, headers=headers, timeout=15)
+            data = res.json()
+            
+            video_url = data.get("url")
+            if video_url:
+                vid_data = requests.get(video_url, stream=True, timeout=30)
+                if vid_data.status_code == 200:
+                    with open(filename, 'wb') as f:
+                        for chunk in vid_data.iter_content(chunk_size=1024*1024):
+                            if chunk:
+                                f.write(chunk)
+                    return True
+        except Exception as e:
+            continue
+    return False
+
+# মূল ডাউনলোড কন্ট্রোলার
+def download_video(url, filename):
+    real_url = resolve_url(url)
+    
+    # ১ম চেষ্টা: yt-dlp দিয়ে
+    try:
+        download_with_ytdlp(real_url, filename)
+        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+            return
+    except Exception as ytdl_error:
+        print("Primary engine blocked, switching to backup API...")
+        
+        # ২য় চেষ্টা: ব্যাকআপ সার্ভার দিয়ে
+        success = download_with_fallback_api(real_url, filename)
+        if success and os.path.exists(filename) and os.path.getsize(filename) > 1000:
+            return
+        
+        # দুটিই ব্যর্থ হলে আসল এরর দেখাবে
+        raise ytdl_error
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     welcome_text = (
@@ -81,7 +127,6 @@ def send_welcome(message):
     )
     bot.reply_to(message, welcome_text, reply_markup=get_channel_button(), parse_mode="Markdown")
 
-# লিংক পাঠালে ডাউনলোড করার অংশ
 @bot.message_handler(func=lambda message: True)
 def handle_link(message):
     chat_id = message.chat.id
@@ -132,7 +177,6 @@ def handle_link(message):
         if os.path.exists(filename):
             os.remove(filename)
 
-# বট যেন কখনোই বন্ধ না হয় (Auto-Restart Loop)
 if __name__ == "__main__":
     keep_alive()
     print("⏳ পুরনো সেশন ক্লিয়ার করা হচ্ছে...")
