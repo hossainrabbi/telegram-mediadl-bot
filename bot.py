@@ -1,5 +1,6 @@
 import os
 import threading
+import requests
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,7 +16,6 @@ CHANNEL_LINK = "https://t.me/techtricks360"
 bot = telebot.TeleBot(BOT_TOKEN)
 user_downloads = {}
 
-# ২৪ ঘণ্টা অনলাইনে রাখার জন্য ছোট ফ্রি সার্ভার
 app = Flask(__name__)
 
 @app.route('/')
@@ -35,10 +35,22 @@ def get_channel_button():
     markup.add(InlineKeyboardButton("📢 আমাদের চ্যানেলে জয়েন করুন", url=CHANNEL_LINK))
     return markup
 
+# ১. ফেসবুক ও টিকটকের শর্ট/শেয়ার লিংক আসল লিংকে রূপান্তর করা
+def resolve_url(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
+        r = requests.head(url, allow_redirects=True, headers=headers, timeout=10)
+        return r.url
+    except Exception:
+        return url
+
+# ২. Render সার্ভারের জন্য অপ্টিমাইজড ডাউনলোডার (ffmpeg ছাড়াই চলবে)
 def download_video(url, filename):
+    real_url = resolve_url(url)
+    
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][filesize<45M]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
+        # Render-এ ffmpeg ছাড়া সিঙ্গেল mp4 ফাইল নামানোর কমান্ড
+        'format': 'best[ext=mp4][filesize<48M]/best[ext=mp4]/best',
         'outtmpl': filename,
         'quiet': True,
         'no_warnings': True,
@@ -46,23 +58,22 @@ def download_video(url, filename):
         'nocheckcertificate': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['ios', 'android', 'mweb']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
         }
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        ydl.download([real_url])
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     welcome_text = (
-        "👋 **স্বাগতম All-in-One Video Downloader বটে!**\n\n"
+        "👋 **স্বাগতম MediaGrab Video Downloader বটে!**\n\n"
         "আমাকে যেকোনো **TikTok, Instagram Reel, Facebook বা YouTube Shorts**-এর লিংক পাঠান, "
-        "আমি ওয়াটারমার্ক ছাড়া HD ভিডিও ডাউনলোড করে দেবো! 🚀\n\n"
-        "💡 *নতুন আপডেট পেতে আমাদের চ্যানেলে যুক্ত হতে পারেন:*"
+        "আমি ওয়াটারমার্ক ছাড়া HD ভিডিও ডাউনলোড করে দেবো! 🚀"
     )
     bot.reply_to(message, welcome_text, reply_markup=get_channel_button(), parse_mode="Markdown")
 
@@ -105,15 +116,20 @@ def handle_link(message):
             bot.send_message(chat_id, promo_text, reply_markup=get_channel_button(), parse_mode="Markdown")
 
     except Exception as e:
+        error_text = str(e)
+        print("Download Error:", error_text)
+        
+        # আসল সমস্যা কী তা দেখার জন্য নিচে ছোট করে এরর মেসেজ যুক্ত করা হয়েছে
         bot.edit_message_text(
-            "❌ দুঃখিত! এই ভিডিওটি ডাউনলোড করা যাচ্ছে না। লিংকটি পাবলিক আছে কি না চেক করুন।", 
+            f"❌ দুঃখিত! এই ভিডিওটি ডাউনলোড করা যাচ্ছে না।\n\n🔍 **সমস্যা:** `{error_text[:120]}`", 
             chat_id, 
-            wait_msg.message_id
+            wait_msg.message_id,
+            parse_mode="Markdown"
         )
         if os.path.exists(filename):
             os.remove(filename)
 
 if __name__ == "__main__":
     keep_alive()
-    print("✅ বট ২৪ ঘণ্টার জন্য চালু হয়েছে!")
+    print("✅ বট নতুন আপডেটে চালু হয়েছে!")
     bot.infinity_polling(skip_pending=True)
