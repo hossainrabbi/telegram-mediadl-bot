@@ -45,7 +45,7 @@ def resolve_url(url):
     except Exception:
         return url
 
-# ইঞ্জিন ১: প্রাইমারি ডাউনলোডার (TikTok ও সাধারণ সাইটের জন্য সেরা)
+# ইঞ্জিন ১: cookies.txt সহ প্রাইমারি ডাউনলোডার
 def download_with_ytdlp(url, filename):
     ydl_opts = {
         'format': 'best[ext=mp4][filesize<48M]/best[ext=mp4]/best',
@@ -54,25 +54,22 @@ def download_with_ytdlp(url, filename):
         'no_warnings': True,
         'geo_bypass': True,
         'nocheckcertificate': True,
-        # বট চেক এড়াতে বিশেষ ক্লায়েন্ট ব্যবহৃত হয়েছে
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'android_vr', 'web_creator']
-            }
-        }
     }
+    
+    # যদি cookies.txt ফাইল থাকে তবে সেটি অটোমেটিক ব্যবহার করবে
+    if os.path.exists('cookies.txt'):
+        ydl_opts['cookiefile'] = 'cookies.txt'
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
-# ইঞ্জিন ২: ব্যাকআপ এপিআই (যদি ইউটিউব/ফেসবুক সার্ভার ব্লক করে দেয়)
+# ইঞ্জিন ২: ব্যাকআপ এপিআই
 def download_with_fallback_api(url, filename):
-    # একাধিক পাবলিক ডাউনলোডার সার্ভারের তালিকা
     api_endpoints = [
         "https://cobalt-api.kwiatekmiki.com",
         "https://cobalt.api.timelessnesses.me",
         "https://api.cobalt.tools"
     ]
-    
     for api in api_endpoints:
         try:
             headers = {
@@ -82,9 +79,7 @@ def download_with_fallback_api(url, filename):
             }
             payload = {"url": url, "vQuality": "720"}
             res = requests.post(api, json=payload, headers=headers, timeout=15)
-            data = res.json()
-            
-            video_url = data.get("url")
+            video_url = res.json().get("url")
             if video_url:
                 vid_data = requests.get(video_url, stream=True, timeout=30)
                 if vid_data.status_code == 200:
@@ -93,28 +88,20 @@ def download_with_fallback_api(url, filename):
                             if chunk:
                                 f.write(chunk)
                     return True
-        except Exception as e:
+        except Exception:
             continue
     return False
 
-# মূল ডাউনলোড কন্ট্রোলার
 def download_video(url, filename):
     real_url = resolve_url(url)
-    
-    # ১ম চেষ্টা: yt-dlp দিয়ে
     try:
         download_with_ytdlp(real_url, filename)
         if os.path.exists(filename) and os.path.getsize(filename) > 1000:
             return
     except Exception as ytdl_error:
-        print("Primary engine blocked, switching to backup API...")
-        
-        # ২য় চেষ্টা: ব্যাকআপ সার্ভার দিয়ে
         success = download_with_fallback_api(real_url, filename)
         if success and os.path.exists(filename) and os.path.getsize(filename) > 1000:
             return
-        
-        # দুটিই ব্যর্থ হলে আসল এরর দেখাবে
         raise ytdl_error
 
 @bot.message_handler(commands=['start'])
@@ -167,8 +154,6 @@ def handle_link(message):
 
     except Exception as e:
         error_text = str(e).replace('`', '').replace('*', '').replace('_', '')
-        print("Download Error:", error_text)
-        
         bot.edit_message_text(
             f"❌ দুঃখিত! এই ভিডিওটি ডাউনলোড করা যাচ্ছে না।\n\n🔍 কারণ: {error_text[:150]}", 
             chat_id, 
@@ -179,14 +164,11 @@ def handle_link(message):
 
 if __name__ == "__main__":
     keep_alive()
-    print("⏳ পুরনো সেশন ক্লিয়ার করা হচ্ছে...")
     bot.remove_webhook()
     time.sleep(2)
-    print("✅ বট সফলভাবে চালু হয়েছে!")
-    
+    print("✅ বট কুকিজসহ সফলভাবে চালু হয়েছে!")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
         except Exception as e:
-            print(f"🔄 বট রিস্টার্ট হচ্ছে... ({e})")
             time.sleep(5)
