@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 import time
 import shutil
 import threading
@@ -49,7 +50,6 @@ def resolve_url(url):
     except Exception:
         return url
 
-# কুকিজ ফাইল খুঁজে বের করা
 def get_cookie_file():
     for name in ['cookies.txt', 'Cookies.txt', 'COOKIES.TXT', 'cookies.txt.txt']:
         if os.path.exists(name) and os.path.getsize(name) > 100:
@@ -57,22 +57,18 @@ def get_cookie_file():
             return '/tmp/yt_cookies.txt'
     return None
 
-# ইঞ্জিন ১: yt-dlp (কুকিজ এবং টিভি/ক্রিয়েটর বাইপাস মোড)
-def download_with_ytdlp(url, filename):
+# ইঞ্জিন ১: ইউনিভার্সাল ফরম্যাট (যেকোনো ফরম্যাট ও রেজোলিউশন সাপোর্ট করবে)
+def download_with_ytdlp(url, base_name):
     ydl_opts = {
-        'format': 'bestvideo[filesize<40M]+bestaudio/best[filesize<48M]/best',
+        # কোনো সাইজ লিমিট বা ক্লায়েন্ট রেস্ট্রিকশন ছাড়া সরাসরি বেস্ট ফরম্যাট নেবে
+        'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]/bestvideo+bestaudio/best',
         'merge_output_format': 'mp4',
         'ffmpeg_location': FFMPEG_PATH,
-        'outtmpl': filename,
+        'outtmpl': f"{base_name}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
         'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web_creator', 'tv_embedded', 'mweb']
-            }
-        }
     }
     
     cookie_path = get_cookie_file()
@@ -82,89 +78,58 @@ def download_with_ytdlp(url, filename):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
-# ইঞ্জিন ২: স্পেশাল YouTube Proxy API (কুকিজ ছাড়াও ইউটিউব নামাবে)
-def download_youtube_direct_api(url, filename):
-    # লিংক থেকে ইউটিউব ভিডিওর ১১ অক্ষরের ID বের করা
-    match = re.search(r"(?:v=|\/shorts\/|youtu\.be\/)([0-9A-Za-z_-]{11})", url)
-    if not match:
-        return False
-    video_id = match.group(1)
+    # ডাউনলোড হওয়া ফাইলটি খুঁজে বের করা
+    files = glob.glob(f"{base_name}.*")
+    for f in files:
+        if not f.endswith('.part') and not f.endswith('.ytdl'):
+            return f
+    return None
 
-    # ৪টি আলাদা ফ্রি ইউটিউব প্রক্সি সার্ভার
-    piped_apis = [
-        f"https://pipedapi.kavin.rocks/streams/{video_id}",
-        f"https://pipedapi.tokhmi.xyz/streams/{video_id}",
-        f"https://pipedapi.syncpundit.io/streams/{video_id}",
-        f"https://api.piped.private.coffee/streams/{video_id}"
-    ]
+# ইঞ্জিন ২: কুকিজ ছাড়া ট্রাই করা (যদি কখনো কুকির কারণে ফরম্যাট আটকে যায়)
+def download_without_cookies(url, base_name):
+    ydl_opts = {
+        'format': 'bestvideo[height<=720]+bestaudio/best',
+        'merge_output_format': 'mp4',
+        'ffmpeg_location': FFMPEG_PATH,
+        'outtmpl': f"{base_name}.%(ext)s",
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_vr', 'tv_embedded']
+            }
+        }
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-    for api in piped_apis:
-        try:
-            res = requests.get(api, timeout=12)
-            if res.status_code == 200:
-                data = res.json()
-                streams = data.get("videoStreams", [])
-                # অডিওসহ ভিডিও স্ট্রিম খোঁজা (videoOnly == False)
-                for s in streams:
-                    if not s.get("videoOnly", True) and s.get("format") == "MPEG-4":
-                        dl_url = s.get("url")
-                        if dl_url:
-                            vid = requests.get(dl_url, stream=True, timeout=30)
-                            if vid.status_code == 200:
-                                with open(filename, 'wb') as f:
-                                    for chunk in vid.iter_content(chunk_size=1024*1024):
-                                        if chunk:
-                                            f.write(chunk)
-                                return True
-        except Exception:
-            continue
-    return False
+    files = glob.glob(f"{base_name}.*")
+    for f in files:
+        if not f.endswith('.part') and not f.endswith('.ytdl'):
+            return f
+    return None
 
-# ইঞ্জিন ৩: অল-ইন-ওয়ান ব্যাকআপ API (Cobalt)
-def download_with_cobalt_api(url, filename):
-    api_endpoints = [
-        "https://cobalt-api.kwiatekmiki.com",
-        "https://cobalt.api.timelessnesses.me"
-    ]
-    for api in api_endpoints:
-        try:
-            headers = {"Accept": "application/json", "Content-Type": "application/json"}
-            res = requests.post(api, json={"url": url, "vQuality": "720"}, headers=headers, timeout=15)
-            video_url = res.json().get("url")
-            if video_url:
-                vid_data = requests.get(video_url, stream=True, timeout=30)
-                if vid_data.status_code == 200:
-                    with open(filename, 'wb') as f:
-                        for chunk in vid_data.iter_content(chunk_size=1024*1024):
-                            if chunk:
-                                f.write(chunk)
-                    return True
-        except Exception:
-            continue
-    return False
-
-# মাস্টার ডাউনলোড কন্ট্রোলার (১টি ফেল করলে পরেরটি চেষ্টা করবে)
-def download_video(url, filename):
+# মাস্টার ডাউনলোড কন্ট্রোলার
+def download_video(url, base_name):
     real_url = resolve_url(url)
     
-    # ১ম চেষ্টা: yt-dlp + Cookies
+    # ১ম চেষ্টা: কুকিজসহ সরাসরি ডাউনলোড
     try:
-        download_with_ytdlp(real_url, filename)
-        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-            return
-    except Exception as ytdl_error:
-        # ২য় চেষ্টা: যদি ইউটিউব লিংক হয় তবে Piped Proxy API দিয়ে নামাবে
-        if "youtube.com" in real_url or "youtu.be" in real_url:
-            if download_youtube_direct_api(real_url, filename):
-                if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                    return
+        file_path = download_with_ytdlp(real_url, base_name)
+        if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+            return file_path
+    except Exception as first_error:
+        print("First attempt failed, trying fallback client...", first_error)
         
-        # ৩য় চেষ্টা: Cobalt API দিয়ে নামাবে
-        if download_with_cobalt_api(real_url, filename):
-            if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                return
-                
-        raise ytdl_error
+        # ২য় চেষ্টা: বিকল্প ক্লায়েন্ট দিয়ে ডাউনলোড
+        try:
+            file_path = download_without_cookies(real_url, base_name)
+            if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+                return file_path
+        except Exception:
+            pass
+            
+        raise first_error
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -187,15 +152,13 @@ def handle_link(message):
         return
 
     wait_msg = bot.reply_to(message, "⏳ আপনার ভিডিওটি ডাউনলোড হচ্ছে, একটু অপেক্ষা করুন...")
-    filename = f"video_{chat_id}.mp4"
-
-    if os.path.exists(filename):
-        os.remove(filename)
+    base_name = f"video_{chat_id}_{int(time.time())}"
+    downloaded_file = None
 
     try:
-        download_video(url, filename)
+        downloaded_file = download_video(url, base_name)
 
-        with open(filename, 'rb') as video:
+        with open(downloaded_file, 'rb') as video:
             bot.send_video(
                 chat_id, 
                 video, 
@@ -204,7 +167,6 @@ def handle_link(message):
                 parse_mode="Markdown"
             )
 
-        os.remove(filename)
         bot.delete_message(chat_id, wait_msg.message_id)
 
         user_downloads[chat_id] = user_downloads.get(chat_id, 0) + 1
@@ -222,14 +184,19 @@ def handle_link(message):
             chat_id, 
             wait_msg.message_id
         )
-        if os.path.exists(filename):
-            os.remove(filename)
+    finally:
+        # ডাউনলোড শেষে সার্ভারের ফাইল মুছে ফেলা
+        for f in glob.glob(f"{base_name}*"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     keep_alive()
     bot.remove_webhook()
     time.sleep(2)
-    print("✅ বট ৩টি ইঞ্জিনসহ সফলভাবে চালু হয়েছে!")
+    print("✅ বট ইউনিভার্সাল ফরম্যাটসহ চালু হয়েছে!")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
