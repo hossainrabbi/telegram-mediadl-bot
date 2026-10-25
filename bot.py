@@ -1,11 +1,13 @@
 import os
 import time
+import shutil
 import threading
 import requests
 from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
+import imageio_ffmpeg
 
 # ========================================================
 # ⚠️ নিচের ২টি জায়গায় অবশ্যই তোমার আসল তথ্য বসাও ⚠️
@@ -17,11 +19,14 @@ CHANNEL_LINK = "https://t.me/techtricks360"
 bot = telebot.TeleBot(BOT_TOKEN)
 user_downloads = {}
 
+# ফ্রি সার্ভারে অটোমেটিক ffmpeg সেটআপ করা
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "MediaGrab Bot is running 24/7!"
+    return "MediaGrab Bot is running 24/7 with FFmpeg!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -45,10 +50,13 @@ def resolve_url(url):
     except Exception:
         return url
 
-# ইঞ্জিন ১: cookies.txt সহ প্রাইমারি ডাউনলোডার
+# ইঞ্জিন ১: FFmpeg এবং Cookies সহ অল-ইন-ওয়ান ডাউনলোডার
 def download_with_ytdlp(url, filename):
     ydl_opts = {
-        'format': 'best[ext=mp4][filesize<48M]/best[ext=mp4]/best',
+        # যেকোনো উপলব্ধ ভিডিও ও অডিও নামিয়ে MP4 তৈরি করবে
+        'format': 'bestvideo[filesize<40M]+bestaudio/best[filesize<48M]/best',
+        'merge_output_format': 'mp4',
+        'ffmpeg_location': FFMPEG_PATH,
         'outtmpl': filename,
         'quiet': True,
         'no_warnings': True,
@@ -56,9 +64,10 @@ def download_with_ytdlp(url, filename):
         'nocheckcertificate': True,
     }
     
-    # যদি cookies.txt ফাইল থাকে তবে সেটি অটোমেটিক ব্যবহার করবে
+    # Render সার্ভারে কুকিজ ফাইলটি কপি করে ব্যবহার করা (যাতে Read-only এরর না আসে)
     if os.path.exists('cookies.txt'):
-        ydl_opts['cookiefile'] = 'cookies.txt'
+        shutil.copy('cookies.txt', '/tmp/cookies.txt')
+        ydl_opts['cookiefile'] = '/tmp/cookies.txt'
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -166,7 +175,7 @@ if __name__ == "__main__":
     keep_alive()
     bot.remove_webhook()
     time.sleep(2)
-    print("✅ বট কুকিজসহ সফলভাবে চালু হয়েছে!")
+    print("✅ বট FFmpeg ও কুকিজসহ সফলভাবে চালু হয়েছে!")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
