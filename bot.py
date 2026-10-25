@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import shutil
 import threading
@@ -18,15 +19,13 @@ CHANNEL_LINK = "https://t.me/techtricks360"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 user_downloads = {}
-
-# ফ্রি সার্ভারে অটোমেটিক ffmpeg সেটআপ করা
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "MediaGrab Bot is running 24/7 with FFmpeg!"
+    return "MediaGrab Bot is running 24/7!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -50,10 +49,17 @@ def resolve_url(url):
     except Exception:
         return url
 
-# ইঞ্জিন ১: FFmpeg এবং Cookies সহ অল-ইন-ওয়ান ডাউনলোডার
+# কুকিজ ফাইল খুঁজে বের করা
+def get_cookie_file():
+    for name in ['cookies.txt', 'Cookies.txt', 'COOKIES.TXT', 'cookies.txt.txt']:
+        if os.path.exists(name) and os.path.getsize(name) > 100:
+            shutil.copy(name, '/tmp/yt_cookies.txt')
+            return '/tmp/yt_cookies.txt'
+    return None
+
+# ইঞ্জিন ১: yt-dlp (কুকিজ এবং টিভি/ক্রিয়েটর বাইপাস মোড)
 def download_with_ytdlp(url, filename):
     ydl_opts = {
-        # যেকোনো উপলব্ধ ভিডিও ও অডিও নামিয়ে MP4 তৈরি করবে
         'format': 'bestvideo[filesize<40M]+bestaudio/best[filesize<48M]/best',
         'merge_output_format': 'mp4',
         'ffmpeg_location': FFMPEG_PATH,
@@ -62,32 +68,68 @@ def download_with_ytdlp(url, filename):
         'no_warnings': True,
         'geo_bypass': True,
         'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['web_creator', 'tv_embedded', 'mweb']
+            }
+        }
     }
     
-    # Render সার্ভারে কুকিজ ফাইলটি কপি করে ব্যবহার করা (যাতে Read-only এরর না আসে)
-    if os.path.exists('cookies.txt'):
-        shutil.copy('cookies.txt', '/tmp/cookies.txt')
-        ydl_opts['cookiefile'] = '/tmp/cookies.txt'
+    cookie_path = get_cookie_file()
+    if cookie_path:
+        ydl_opts['cookiefile'] = cookie_path
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
-# ইঞ্জিন ২: ব্যাকআপ এপিআই
-def download_with_fallback_api(url, filename):
+# ইঞ্জিন ২: স্পেশাল YouTube Proxy API (কুকিজ ছাড়াও ইউটিউব নামাবে)
+def download_youtube_direct_api(url, filename):
+    # লিংক থেকে ইউটিউব ভিডিওর ১১ অক্ষরের ID বের করা
+    match = re.search(r"(?:v=|\/shorts\/|youtu\.be\/)([0-9A-Za-z_-]{11})", url)
+    if not match:
+        return False
+    video_id = match.group(1)
+
+    # ৪টি আলাদা ফ্রি ইউটিউব প্রক্সি সার্ভার
+    piped_apis = [
+        f"https://pipedapi.kavin.rocks/streams/{video_id}",
+        f"https://pipedapi.tokhmi.xyz/streams/{video_id}",
+        f"https://pipedapi.syncpundit.io/streams/{video_id}",
+        f"https://api.piped.private.coffee/streams/{video_id}"
+    ]
+
+    for api in piped_apis:
+        try:
+            res = requests.get(api, timeout=12)
+            if res.status_code == 200:
+                data = res.json()
+                streams = data.get("videoStreams", [])
+                # অডিওসহ ভিডিও স্ট্রিম খোঁজা (videoOnly == False)
+                for s in streams:
+                    if not s.get("videoOnly", True) and s.get("format") == "MPEG-4":
+                        dl_url = s.get("url")
+                        if dl_url:
+                            vid = requests.get(dl_url, stream=True, timeout=30)
+                            if vid.status_code == 200:
+                                with open(filename, 'wb') as f:
+                                    for chunk in vid.iter_content(chunk_size=1024*1024):
+                                        if chunk:
+                                            f.write(chunk)
+                                return True
+        except Exception:
+            continue
+    return False
+
+# ইঞ্জিন ৩: অল-ইন-ওয়ান ব্যাকআপ API (Cobalt)
+def download_with_cobalt_api(url, filename):
     api_endpoints = [
         "https://cobalt-api.kwiatekmiki.com",
-        "https://cobalt.api.timelessnesses.me",
-        "https://api.cobalt.tools"
+        "https://cobalt.api.timelessnesses.me"
     ]
     for api in api_endpoints:
         try:
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            }
-            payload = {"url": url, "vQuality": "720"}
-            res = requests.post(api, json=payload, headers=headers, timeout=15)
+            headers = {"Accept": "application/json", "Content-Type": "application/json"}
+            res = requests.post(api, json={"url": url, "vQuality": "720"}, headers=headers, timeout=15)
             video_url = res.json().get("url")
             if video_url:
                 vid_data = requests.get(video_url, stream=True, timeout=30)
@@ -101,25 +143,37 @@ def download_with_fallback_api(url, filename):
             continue
     return False
 
+# মাস্টার ডাউনলোড কন্ট্রোলার (১টি ফেল করলে পরেরটি চেষ্টা করবে)
 def download_video(url, filename):
     real_url = resolve_url(url)
+    
+    # ১ম চেষ্টা: yt-dlp + Cookies
     try:
         download_with_ytdlp(real_url, filename)
         if os.path.exists(filename) and os.path.getsize(filename) > 1000:
             return
     except Exception as ytdl_error:
-        success = download_with_fallback_api(real_url, filename)
-        if success and os.path.exists(filename) and os.path.getsize(filename) > 1000:
-            return
+        # ২য় চেষ্টা: যদি ইউটিউব লিংক হয় তবে Piped Proxy API দিয়ে নামাবে
+        if "youtube.com" in real_url or "youtu.be" in real_url:
+            if download_youtube_direct_api(real_url, filename):
+                if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+                    return
+        
+        # ৩য় চেষ্টা: Cobalt API দিয়ে নামাবে
+        if download_with_cobalt_api(real_url, filename):
+            if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+                return
+                
         raise ytdl_error
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    cookie_status = "✅ Active" if get_cookie_file() else "⚠️ Missing"
     welcome_text = (
         "👋 **স্বাগতম MediaGrab Video Downloader বটে!**\n\n"
         "আমাকে যেকোনো **TikTok, Instagram Reel, Facebook বা YouTube Shorts**-এর লিংক পাঠান, "
         "আমি ওয়াটারমার্ক ছাড়া HD ভিডিও ডাউনলোড করে দেবো! 🚀\n\n"
-        "💡 *নতুন আপডেট পেতে আমাদের চ্যানেলে যুক্ত হতে পারেন:*"
+        f"🍪 *YouTube Cookie Status: {cookie_status}*"
     )
     bot.reply_to(message, welcome_text, reply_markup=get_channel_button(), parse_mode="Markdown")
 
@@ -175,7 +229,7 @@ if __name__ == "__main__":
     keep_alive()
     bot.remove_webhook()
     time.sleep(2)
-    print("✅ বট FFmpeg ও কুকিজসহ সফলভাবে চালু হয়েছে!")
+    print("✅ বট ৩টি ইঞ্জিনসহ সফলভাবে চালু হয়েছে!")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
